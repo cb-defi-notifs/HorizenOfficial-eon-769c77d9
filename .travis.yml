@@ -15,7 +15,6 @@ env:
   global:
     - DOCKER_IMAGE_NAME=evmapp
 #    - PROD_RELEASE_BRANCH=main
-    - TRAVIS_TAG=0.1.0-SNAPSHOT6
     - DEV_RELEASE_BRANCH=buildNeededImage
     #- DEV_RELEASE_BRANCH=development
 

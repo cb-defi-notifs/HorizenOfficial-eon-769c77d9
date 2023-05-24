@@ -1,5 +1,10 @@
 #!/bin/bash
 set -eEuo pipefail
+set -x
+
+TRAVIS_TAG='0.1.0-SNAPSHOT6'
+IS_A_RELEASE='true'
+
 
 workdir="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
 docker_image_name="${DOCKER_IMAGE_NAME:-evmapp}"
@@ -69,7 +74,7 @@ if [ -n "${docker_tag}" ]; then
     docker push "index.docker.io/${docker_hub_org}/${docker_image_name}:${docker_tag}"
   fi
 else
-  echo "" && echo "=== The build id not satisfy RELEASE build requirements. Docker image is not being created ===" && echo ""
+  echo "" && echo "=== The build DID NOT satisfy RELEASE build requirements. Docker image is not being created ===" && echo ""
 fi
 
 

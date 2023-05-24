@@ -1,5 +1,6 @@
 #!/bin/bash
 set -eo pipefail
+set -x
 
 export IS_A_RELEASE="false"
 
