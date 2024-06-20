@@ -1,17 +1,25 @@
 #!/bin/bash
 set -eo pipefail
 
-export IS_A_RELEASE="false"
+IS_A_RELEASE="false"
+IS_A_GH_PRERELEASE="false"
+PROD_RELEASE="false"
 
-POM_VERSION="$(xpath -q -e '/project/version/text()' pom.xml)"
-export POM_VERSION
+ROOT_POM_VERSION="$(xpath -q -e '/project/version/text()' pom.xml)"
+node_pom_version="$(xpath -q -e '/project/version/text()' ./node/pom.xml)"
+bootstraptool_pom_version="$(xpath -q -e '/project/version/text()' ./bootstraptool/pom.xml)"
+export ROOT_POM_VERSION
 
 if [ -z "${TRAVIS_TAG}" ]; then
-  echo "TRAVIS_TAG:                           No TAG"
+  echo "TRAVIS_TAG:                     No TAG"
 else
-  echo "TRAVIS_TAG:                           ${TRAVIS_TAG}"
+  echo "TRAVIS_TAG:                     ${TRAVIS_TAG}"
 fi
-echo "package version:                      ${POM_VERSION}"
+echo "Production release branch is:   ${PROD_RELEASE_BRANCH}"
+echo "Development release branch is:  ${DEV_RELEASE_BRANCH}"
+echo "Root pom.xml version:           ${ROOT_POM_VERSION}"
+echo "EON node pom.xml version:       ${node_pom_version}"
+echo "Bootstrap tool pom.xml version: ${bootstraptool_pom_version}"
 
 
 # Functions
@@ -41,68 +49,118 @@ function check_signed_tag() {
   # Checking if git tag signed by the maintainers
   if git verify-tag -v "${tag}"; then
     echo "${tag} is a valid signed tag"
-    export IS_A_RELEASE="true"
   else
     echo "" && echo "=== Warning: GIT's tag = ${tag} signature is NOT valid. The build is not going to be released ... ===" && echo ""
+    export IS_A_RELEASE="false"
   fi
 }
 
+function  check_versions_match () {
+  local versions_to_check=("$@")
+
+  if [ "${#versions_to_check[@]}" -eq 1 ]; then
+    echo "Warning: ${FUNCNAME[0]} requires more than one version to be able to compare with.  The build is not going to be released ..."
+    export IS_A_RELEASE="false" && return
+  fi
+
+  for (( i=0; i<((${#versions_to_check[@]}-1)); i++ )); do
+    [ "${versions_to_check[$i]}" != "${versions_to_check[(($i+1))]}" ] &&
+    { echo -e "Warning: one or more module(s) versions do NOT match. The build is not going to be released ... !!!\nThe versions are ${versions_to_check[*]}"; export IS_A_RELEASE="false" && break; }
+  done
+
+  export IS_A_RELEASE="true"
+}
+
+# empty key.asc file in case we're not signing
+touch "${HOME}/key.asc"
+
 # Checking if it a release build
 if [ -n "${TRAVIS_TAG}" ]; then
-  echo "The current production branch is: ${PROD_RELEASE_BRANCH}"
-  echo "The current development branch is: ${DEV_RELEASE_BRANCH}"
+  # Checking versions match
+  check_versions_match "${ROOT_POM_VERSION}" "${node_pom_version}" "${bootstraptool_pom_version}"
 
-  # checking if PROD_MAINTAINERS_KEYS and DEV_MAINTAINERS_KEYS are set
-  if [[ -z "${PROD_MAINTAINERS_KEYS}" || -z "${DEV_MAINTAINERS_KEYS}" ]]; then
-    echo "Warning: PROD_MAINTAINERS_KEYS and/or DEV_MAINTAINERS_KEYS variables are not set. Make sure to set it up for PROD|DEV release build !!!"
+  # checking if PROD_MAINTAINERS_KEYS is set
+  if [ -z "${PROD_MAINTAINERS_KEYS}" ]; then
+    echo "Warning: PROD_MAINTAINERS_KEYS variable is not set. Make sure to set it up for PROD|DEV release build !!!"
+  fi
+
+  # checking if DEV_MAINTAINERS_KEYS is set
+  if [ -z "${DEV_MAINTAINERS_KEYS}" ]; then
+    echo "Warning: DEV_MAINTAINERS_KEYS variable is not set. Only PROD_MAINTAINERS_KEYS will be able to run DEV release !!!"
   fi
   all_maintainers_keys=$(echo "${PROD_MAINTAINERS_KEYS} ${DEV_MAINTAINERS_KEYS}" | xargs -n1 | sort -u | xargs)
 
   # Prod vs development release
   if ( git branch -r --contains "${TRAVIS_TAG}" | grep -xqE ". origin\/${PROD_RELEASE_BRANCH}$" ); then
+    # Importing GPG keys
     import_gpg_keys "${PROD_MAINTAINERS_KEYS}"
+    # Checking git tag gpg signature requirement
     check_signed_tag "${TRAVIS_TAG}"
 
-    if ! [[ "${POM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-RC[0-9]+)?$ ]]; then
-      echo "Warning: package version under pom.xml file = ${POM_VERSION} is in the wrong format for production release. Expecting: d.d.d(-RC[0-9]+)?. The build is not going to be released !!!"
+    # Checking format of production release pom version
+    if ! [[ "${ROOT_POM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$ ]]; then
+      echo "Warning: package(s) version is in the wrong format for PRODUCTION} release. Expecting: d.d.d(-[0-9]+)?. The build is not going to be released !!!"
       export IS_A_RELEASE="false"
     fi
 
     # Checking Github tag format
-    if ! [[ "${TRAVIS_TAG}" == "${POM_VERSION}" ]]; then
+    if ! [[ "${TRAVIS_TAG}" == "${ROOT_POM_VERSION}" ]]; then
       echo "" && echo "=== Warning: GIT tag format differs from the pom file version. ===" && echo ""
-      echo -e "Github tag name: ${TRAVIS_TAG}\nPom file version: ${POM_VERSION}.\nThe build is not going to be released !!!"
+      echo -e "Github tag name: ${TRAVIS_TAG}\nPom file version: ${ROOT_POM_VERSION}.\nThe build is not going to be released !!!"
       export IS_A_RELEASE="false"
     fi
 
+    # Announcing PROD release
     if [ "${IS_A_RELEASE}" = "true" ]; then
       echo "" && echo "=== Production release ===" && echo ""
+
+      export PROD_RELEASE="true"
+      export IS_A_GH_PRERELEASE="false"
     fi
   elif ( git branch -r --contains "${TRAVIS_TAG}" | grep -xqE ". origin\/${DEV_RELEASE_BRANCH}$" ); then
+    # Importing GPG keys
     import_gpg_keys "${all_maintainers_keys}"
+    # Checking git tag gpg signature requirement
     check_signed_tag "${TRAVIS_TAG}"
 
-    if ! [[ "${POM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-RC[0-9]+)?(-SNAPSHOT){1}$ ]]; then
-      echo "Warning: package version under pom.xml file = ${POM_VERSION} is in the wrong format for development release. Expecting: d.d.d(-RC[0-9]+)?(-SNAPSHOT){1}. The build is not going to be released !!!"
-      IS_A_RELEASE="false"
-    fi
-
-    # Checking Github tag format
-    if ! [[ "${TRAVIS_TAG}" =~ "${POM_VERSION}"[0-9]*$ ]]; then
-      echo "" && echo "=== Warning: GIT tag format differs from the pom file version. ===" && echo ""
-      echo -e "Github tag name: ${TRAVIS_TAG}\nPom file version: ${POM_VERSION}.\nThe build is not going to be released !!!"
+    # Checking if package version matches DEV release version
+    if [[ "${ROOT_POM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?(-SNAPSHOT){1}$ ]]; then
+      if [[ "${TRAVIS_TAG}" =~ "${ROOT_POM_VERSION}"[0-9]*$ ]]; then
+        echo "" && echo "=== Development release ===" && echo ""
+        export IS_A_RELEASE="true"
+      else
+        echo "" && echo "=== Warning: GIT tag format differs from the pom file version. ===" && echo ""
+        echo -e "Github tag name: ${TRAVIS_TAG}\nPom file version: ${ROOT_POM_VERSION}.\nThe build is not going to be released !!!"
+        export IS_A_RELEASE="false"
+      fi
+    elif [[ "${ROOT_POM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-RC[0-9]+){1}$ ]]; then
+      if [[ "${TRAVIS_TAG}" == "${ROOT_POM_VERSION}" ]]; then
+        echo "" && echo "=== RC release ===" && echo ""
+        export IS_A_RELEASE="true"
+      else
+        echo "" && echo "=== Warning: GIT tag format differs from the pom file version. ===" && echo ""
+        echo -e "Github tag name: ${TRAVIS_TAG}\nPom file version: ${ROOT_POM_VERSION}.\nThe build is not going to be released !!!"
+        export IS_A_RELEASE="false"
+      fi
+    else
+      echo "Warning: package(s) version is in the wrong format for DEVELOPMENT or RC release. Expecting: d.d.d(-SNAPSHOT){1} or d.d.d(-RC[0-9]+){1}. The build is not going to be released !!!"
       export IS_A_RELEASE="false"
     fi
 
     if [ "${IS_A_RELEASE}" = "true" ]; then
-      echo "" && echo "=== Development release ===" && echo ""
+      export PROD_RELEASE="false"
+      export IS_A_GH_PRERELEASE="true"
     fi
+  else
+    export IS_A_RELEASE="false"
   fi
 fi
 
 # Final check for release vs non-release build
 if [ "${IS_A_RELEASE}" = "false" ]; then
   echo "" && echo "=== NOT a release build ===" && echo ""
+
+  export IS_A_RELEASE="false"
 fi
 
 set +eo pipefail
